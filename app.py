@@ -14,12 +14,12 @@ st.write("Unggah screenshot hasil match, biar AI yang menghitung klasemen secara
 PLACEMENT_POINTS = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1, 11: 0, 12: 0}
 KILL_POINT = 1
 
-# Fungsi Cerdas untuk Mengambil 3 Huruf Depan Nama Tim
+# Fungsi Cerdas untuk Mengambil 3 Huruf Depan Nama
 def ambil_3_huruf_depan(nama):
     nama_bersih = re.sub(r'[^A-Za-z0-9]', '', str(nama)).upper()
-    return nama_bersih[:3]
+    return nama_bersih[:3] if len(nama_bersih) >= 3 else nama_bersih
 
-# 1. Inisialisasi Penyimpanan Memori (Session State) untuk 6 Match
+# 1. Inisialisasi Penyimpanan Memori
 if "database_match" not in st.session_state:
     st.session_state["database_match"] = {f"Match {i}": [] for i in range(1, 7)}
 
@@ -38,19 +38,16 @@ else:
     
     st.header(f"📊 Pemrosesan Data - {selected_match}")
     
-    # Input Upload Foto
     col1, col2 = st.columns(2)
     with col1:
         foto_1 = st.file_uploader(f"Upload Gambar 1 (Opsional/Wajib) - {selected_match}", type=["jpg", "jpeg", "png"])
     with col2:
         foto_2 = st.file_uploader(f"Upload Gambar 2 (Opsional) - {selected_match}", type=["jpg", "jpeg", "png"])
         
-    # LOGIKA BARU: Tombol akan muncul jika MINIMAL ADA 1 FOTO yang diunggah
     if foto_1 or foto_2:
         if st.button(f"🚀 Proses & Hitung {selected_match} via AI"):
-            with st.spinner("AI sedang membaca foto dan menganalisis pemain..."):
+            with st.spinner("AI sedang membaca foto dan menganalisis seluruh pemain..."):
                 try:
-                    # Menyiapkan daftar gambar yang diunggah (bisa 1, bisa 2)
                     images_to_process = []
                     if foto_1:
                         images_to_process.append(Image.open(foto_1))
@@ -59,25 +56,25 @@ else:
                     
                     model = genai.GenerativeModel('gemini-2.5-flash')
                     
-                    # PROMPT BARU: Fleksibel, hanya mengekstrak yang terlihat di gambar
+                    # PROMPT BARU: Meminta AI mengekstrak SEMUA NICKNAME
                     prompt = """
                     Kamu adalah sistem AI penilai turnamen esports Free Fire.
-                    Tugasmu menganalisis gambar hasil akhir pertandingan yang diberikan.
+                    Tugasmu menganalisis gambar hasil akhir pertandingan.
                     
-                    Aturan SANGAT KETAT:
-                    1. NAMA TIM: Ambil nickname pemain urutan PERTAMA (paling atas) di dalam setiap kotak peringkat. Jika pemain pertama kabur atau kosong, ambil dari pemain urutan KEDUA, KETIGA, atau KEEMPAT. Tuliskan nickname utuhnya.
-                    2. RANK/PLACE: Angka peringkat dari kotak tersebut.
-                    3. TOTAL KILL: Hitung jumlah kill seluruh pemain di kotak tersebut.
-                    4. OUTPUT SESUAI GAMBAR SAJA: Hanya ekstrak tim yang benar-benar TERLIHAT di gambar. JANGAN MENGARANG atau menambahkan rank/tim fiktif. Jika di gambar hanya terlihat 11 tim, maka keluarkan 11 tim saja.
+                    Aturan KETAT:
+                    1. team: Ambil nickname pemain PERTAMA (paling atas) yang terlihat paling jelas di kotak peringkat tersebut.
+                    2. semua_nick: Ekstrak SEMUA nickname pemain yang ada di kotak peringkat tersebut (pemain 1, 2, 3, dan 4). Gabungkan dengan tanda koma.
+                    3. place: Angka peringkat.
+                    4. kill: Total kill dari seluruh pemain di kotak tersebut.
+                    5. HANYA ekstrak tim yang TERLIHAT di gambar. Jangan mengarang.
                     
-                    Keluarkan output HANYA dalam bentuk JSON array mentah, contoh:
+                    Keluarkan output JSON array mentah, contoh:
                     [
-                        {"team": "EVOS Budi", "place": 1, "kill": 15},
-                        {"team": "SAD BoyZzz", "place": 2, "kill": 10}
+                        {"team": "EVOS Budi", "semua_nick": "EVOS Budi, EVOS Agus, Joko123", "place": 1, "kill": 15},
+                        {"team": "SAD BoyZzz", "semua_nick": "SAD BoyZzz, falz, 120Hz", "place": 2, "kill": 10}
                     ]
                     """
                     
-                    # AI membaca prompt beserta berapapun gambar yang dikirim (1 atau 2)
                     response = model.generate_content([prompt] + images_to_process)
                     clean_json = response.text.strip().replace("```json", "").replace("```", "")
                     parsed_data = json.loads(clean_json)
@@ -86,48 +83,63 @@ else:
                     st.success(f"Data {selected_match} berhasil diekstrak!")
                 except Exception as e:
                     st.error(f"Gagal memproses gambar. Error: {str(e)}")
-                    st.info("Pastikan format gambar didukung dan tidak rusak.")
 
-    # Menampilkan data match aktif (Data Editor)
     if st.session_state["database_match"][selected_match]:
         st.subheader(f"📝 Koreksi Hasil Sementara ({selected_match})")
-        st.info("Jika nama pemain berbeda drastis dari Match 1, edit nama depannya (minimal 3 huruf) agar mirip dengan Match 1 supaya poinnya bisa bergabung di Klasemen Global.")
         
         df_current = pd.DataFrame(st.session_state["database_match"][selected_match])
         edited_df = st.data_editor(df_current, num_rows="dynamic", key=f"editor_{selected_match}")
         st.session_state["database_match"][selected_match] = edited_df.to_dict(orient="records")
 
-# 2. PROSES AKUMULASI GLOBAL (DETEKSI 3 HURUF DEPAN)
+# 2. PROSES AKUMULASI GLOBAL DENGAN PENGECEKAN MULTI-ANGGOTA
 st.markdown("---")
 st.header("🏆 KLASEMEN GLOBAL (TOTAL HASIL 6 MATCH)")
 
 global_records = {}
-kunci_nama_tim = {} # Menyimpan nama resmi tim berdasarkan 3 huruf depannya
+kunci_nama_tim = {} 
 
 for m_idx in range(1, 7):
     m_name = f"Match {m_idx}"
     match_list = st.session_state["database_match"][m_name]
     
     for row in match_list:
-        nama_mentah = str(row.get("team", "")).strip()
-        if not nama_mentah:
+        nama_utama = str(row.get("team", "")).strip()
+        semua_nick_str = str(row.get("semua_nick", ""))
+        
+        if not nama_utama:
             continue
             
         place = row.get("place", "-")
         kill = row.get("kill", 0)
         
-        # Ambil 3 huruf depan sebagai ID Unik penggabung
-        id_3_huruf = ambil_3_huruf_depan(nama_mentah)
+        # Buat daftar pencarian dari nama utama DAN semua nick yang dipisah koma
+        daftar_cek_nick = [nama_utama] + [n.strip() for n in semua_nick_str.split(",")]
         
-        # Jika nama depan ini belum pernah ada, jadikan nama_mentah sebagai Nama Resmi
-        if id_3_huruf not in kunci_nama_tim:
-            # Batasi maksimal agar klasemen global hanya 12 tim
-            if len(kunci_nama_tim) < 12:
-                kunci_nama_tim[id_3_huruf] = nama_mentah
-            else:
-                continue # Abaikan tim siluman yang ke-13 agar tabel tidak rusak
+        id_ditemukan = None
+        
+        # LOGIKA BARU: Cek satu per satu nick pemain, adakah yang cocok dengan tim Match 1?
+        for nick in daftar_cek_nick:
+            if not nick: 
+                continue
+            prefix = ambil_3_huruf_depan(nick)
+            if prefix and prefix in kunci_nama_tim:
+                id_ditemukan = prefix
+                break # Jika ketemu 1 saja, langsung berhenti mencari!
                 
-        nama_resmi = kunci_nama_tim[id_3_huruf]
+        # Jika berhasil menemukan ID yang cocok (Match 2, 3, dst)
+        if id_ditemukan:
+            nama_resmi = kunci_nama_tim[id_ditemukan]
+        else:
+            # Jika tidak ada yang cocok sama sekali, anggap tim baru (Khusus Match 1)
+            prefix_baru = ambil_3_huruf_depan(nama_utama)
+            if prefix_baru not in kunci_nama_tim:
+                if len(kunci_nama_tim) < 12:
+                    kunci_nama_tim[prefix_baru] = nama_utama
+                    nama_resmi = nama_utama
+                else:
+                    continue # Abaikan jika sudah 12 tim
+            else:
+                nama_resmi = kunci_nama_tim[prefix_baru]
         
         # Hitung poin match ini
         try:
@@ -169,4 +181,4 @@ if global_records:
         st.session_state["database_match"] = {f"Match {i}": [] for i in range(1, 7)}
         st.rerun()
 else:
-    st.info("Belum ada data match yang diproses. Klasemen global akan muncul otomatis di sini setelah Anda memproses minimal satu match.")
+    st.info("Belum ada data match yang diproses.")
