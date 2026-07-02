@@ -14,11 +14,10 @@ st.write("Unggah screenshot hasil match, biar AI yang menghitung klasemen secara
 PLACEMENT_POINTS = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1, 11: 0, 12: 0}
 KILL_POINT = 1
 
-# Fungsi Cerdas untuk Mengambil 3 Huruf Depan Nama Tim (Mengabaikan Simbol/Spasi)
+# Fungsi Cerdas untuk Mengambil 3 Huruf Depan Nama Tim
 def ambil_3_huruf_depan(nama):
-    # Hanya menyisakan huruf dan angka, lalu jadikan huruf besar semua
     nama_bersih = re.sub(r'[^A-Za-z0-9]', '', str(nama)).upper()
-    return nama_bersih[:3] # Mengambil 3 karakter pertama saja
+    return nama_bersih[:3]
 
 # 1. Inisialisasi Penyimpanan Memori (Session State) untuk 6 Match
 if "database_match" not in st.session_state:
@@ -42,29 +41,34 @@ else:
     # Input Upload Foto
     col1, col2 = st.columns(2)
     with col1:
-        foto_1 = st.file_uploader(f"Upload Gambar 1 (Rank Atas) - {selected_match}", type=["jpg", "jpeg", "png"])
+        foto_1 = st.file_uploader(f"Upload Gambar 1 (Opsional/Wajib) - {selected_match}", type=["jpg", "jpeg", "png"])
     with col2:
-        foto_2 = st.file_uploader(f"Upload Gambar 2 (Rank Bawah) - {selected_match}", type=["jpg", "jpeg", "png"])
+        foto_2 = st.file_uploader(f"Upload Gambar 2 (Opsional) - {selected_match}", type=["jpg", "jpeg", "png"])
         
-    if foto_1 and foto_2:
+    # LOGIKA BARU: Tombol akan muncul jika MINIMAL ADA 1 FOTO yang diunggah
+    if foto_1 or foto_2:
         if st.button(f"🚀 Proses & Hitung {selected_match} via AI"):
             with st.spinner("AI sedang membaca foto dan menganalisis pemain..."):
                 try:
-                    img1 = Image.open(foto_1)
-                    img2 = Image.open(foto_2)
+                    # Menyiapkan daftar gambar yang diunggah (bisa 1, bisa 2)
+                    images_to_process = []
+                    if foto_1:
+                        images_to_process.append(Image.open(foto_1))
+                    if foto_2:
+                        images_to_process.append(Image.open(foto_2))
                     
                     model = genai.GenerativeModel('gemini-2.5-flash')
                     
-                    # PROMPT BARU: Memaksa AI mengambil nama dari pemain 1-4 dan membatasi TEPAT 12 baris
+                    # PROMPT BARU: Fleksibel, hanya mengekstrak yang terlihat di gambar
                     prompt = """
                     Kamu adalah sistem AI penilai turnamen esports Free Fire.
-                    Tugasmu menganalisis 2 gambar hasil akhir pertandingan yang secara total berisi Rank 1 sampai 12.
+                    Tugasmu menganalisis gambar hasil akhir pertandingan yang diberikan.
                     
                     Aturan SANGAT KETAT:
                     1. NAMA TIM: Ambil nickname pemain urutan PERTAMA (paling atas) di dalam setiap kotak peringkat. Jika pemain pertama kabur atau kosong, ambil dari pemain urutan KEDUA, KETIGA, atau KEEMPAT. Tuliskan nickname utuhnya.
-                    2. RANK/PLACE: Angka peringkat dari kotak tersebut (1-12).
+                    2. RANK/PLACE: Angka peringkat dari kotak tersebut.
                     3. TOTAL KILL: Hitung jumlah kill seluruh pemain di kotak tersebut.
-                    4. OUTPUT WAJIB TEPAT 12 TIM (Rank 1 sampai 12). Tidak boleh lebih dari 12, dan tidak boleh kurang! Periksa kembali agar tidak ada Rank yang terlewat.
+                    4. OUTPUT SESUAI GAMBAR SAJA: Hanya ekstrak tim yang benar-benar TERLIHAT di gambar. JANGAN MENGARANG atau menambahkan rank/tim fiktif. Jika di gambar hanya terlihat 11 tim, maka keluarkan 11 tim saja.
                     
                     Keluarkan output HANYA dalam bentuk JSON array mentah, contoh:
                     [
@@ -73,7 +77,8 @@ else:
                     ]
                     """
                     
-                    response = model.generate_content([prompt, img1, img2])
+                    # AI membaca prompt beserta berapapun gambar yang dikirim (1 atau 2)
+                    response = model.generate_content([prompt] + images_to_process)
                     clean_json = response.text.strip().replace("```json", "").replace("```", "")
                     parsed_data = json.loads(clean_json)
                     
@@ -81,10 +86,12 @@ else:
                     st.success(f"Data {selected_match} berhasil diekstrak!")
                 except Exception as e:
                     st.error(f"Gagal memproses gambar. Error: {str(e)}")
+                    st.info("Pastikan format gambar didukung dan tidak rusak.")
 
     # Menampilkan data match aktif (Data Editor)
     if st.session_state["database_match"][selected_match]:
         st.subheader(f"📝 Koreksi Hasil Sementara ({selected_match})")
+        st.info("Jika nama pemain berbeda drastis dari Match 1, edit nama depannya (minimal 3 huruf) agar mirip dengan Match 1 supaya poinnya bisa bergabung di Klasemen Global.")
         
         df_current = pd.DataFrame(st.session_state["database_match"][selected_match])
         edited_df = st.data_editor(df_current, num_rows="dynamic", key=f"editor_{selected_match}")
