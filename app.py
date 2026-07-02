@@ -3,6 +3,7 @@ import google.generativeai as genai
 import json
 import pandas as pd
 import re
+import difflib # <-- BARU: Library untuk toleransi Typo (Fuzzy Matching)
 from PIL import Image
 
 # Pengaturan Dasar Halaman Web
@@ -14,12 +15,16 @@ st.write("Unggah screenshot hasil match, biar AI yang menghitung klasemen secara
 PLACEMENT_POINTS = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1, 11: 0, 12: 0}
 KILL_POINT = 1
 
-# Fungsi Cerdas untuk Mengambil 3 Huruf Depan Nama
-def ambil_3_huruf_depan(nama):
+# ==========================================
+# LOGIKA PEMBERSIH SIMBOL & PENGAMBIL PREFIX
+# ==========================================
+def ambil_prefix(nama):
+    # Membersihkan semua simbol/spasi, hanya menyisakan Huruf dan Angka, lalu dikapitalisasi
     nama_bersih = re.sub(r'[^A-Za-z0-9]', '', str(nama)).upper()
-    return nama_bersih[:3] if len(nama_bersih) >= 3 else nama_bersih
+    # Mengambil 4 huruf pertama (diperpanjang dari 3 agar Toleransi Typo lebih akurat)
+    return nama_bersih[:4] if len(nama_bersih) >= 4 else nama_bersih
 
-# 1. Inisialisasi Penyimpanan Memori
+# Inisialisasi Penyimpanan Memori
 if "database_match" not in st.session_state:
     st.session_state["database_match"] = {f"Match {i}": [] for i in range(1, 7)}
 
@@ -56,22 +61,25 @@ else:
                     
                     model = genai.GenerativeModel('gemini-2.5-flash')
                     
-                    # PROMPT BARU: Meminta AI mengekstrak SEMUA NICKNAME
+                    # ==========================================
+                    # PROMPT BARU: ANTI-AUTOCORRECT
+                    # ==========================================
                     prompt = """
                     Kamu adalah sistem AI penilai turnamen esports Free Fire.
                     Tugasmu menganalisis gambar hasil akhir pertandingan.
                     
-                    Aturan KETAT:
-                    1. team: Ambil nickname pemain PERTAMA (paling atas) yang terlihat paling jelas di kotak peringkat tersebut.
-                    2. semua_nick: Ekstrak SEMUA nickname pemain yang ada di kotak peringkat tersebut (pemain 1, 2, 3, dan 4). Gabungkan dengan tanda koma.
-                    3. place: Angka peringkat.
-                    4. kill: Total kill dari seluruh pemain di kotak tersebut.
-                    5. HANYA ekstrak tim yang TERLIHAT di gambar. Jangan mengarang.
+                    Aturan SANGAT KETAT (ANTI-AUTOCORRECT):
+                    1. DILARANG KERAS memperbaiki ejaan menjadi kata bahasa Inggris (contoh: JANGAN mengubah 'citcuit' menjadi 'circuit' atau 'cirieueit'). Tuliskan persis huruf demi huruf apa adanya sesuai gambar.
+                    2. team: Ambil nickname pemain PERTAMA (paling atas) yang terlihat paling jelas di kotak peringkat tersebut.
+                    3. semua_nick: Ekstrak SEMUA nickname pemain di kotak tersebut (1, 2, 3, dan 4). Pisahkan dengan koma. Abaikan simbol aneh jika membingungkan.
+                    4. place: Angka peringkat.
+                    5. kill: Total kill dari seluruh pemain di kotak tersebut.
+                    6. HANYA ekstrak tim yang benar-benar TERLIHAT di gambar. Jangan mengarang.
                     
                     Keluarkan output JSON array mentah, contoh:
                     [
-                        {"team": "EVOS Budi", "semua_nick": "EVOS Budi, EVOS Agus, Joko123", "place": 1, "kill": 15},
-                        {"team": "SAD BoyZzz", "semua_nick": "SAD BoyZzz, falz, 120Hz", "place": 2, "kill": 10}
+                        {"team": "EVOS Budi", "semua_nick": "EVOS Budi, EVOS Agus, Joko12", "place": 1, "kill": 15},
+                        {"team": "citcuit ell", "semua_nick": "citcuit ell, falz, 120Hz", "place": 2, "kill": 10}
                     ]
                     """
                     
@@ -86,17 +94,20 @@ else:
 
     if st.session_state["database_match"][selected_match]:
         st.subheader(f"📝 Koreksi Hasil Sementara ({selected_match})")
+        st.info("KODE PINTAR AKTIF: Sistem otomatis membuang simbol dan menoleransi salah ketik AI (Fuzzy Match).")
         
         df_current = pd.DataFrame(st.session_state["database_match"][selected_match])
         edited_df = st.data_editor(df_current, num_rows="dynamic", key=f"editor_{selected_match}")
         st.session_state["database_match"][selected_match] = edited_df.to_dict(orient="records")
 
-# 2. PROSES AKUMULASI GLOBAL DENGAN PENGECEKAN MULTI-ANGGOTA
+# ==========================================
+# PROSES AKUMULASI GLOBAL DENGAN TOLERANSI TYPO
+# ==========================================
 st.markdown("---")
 st.header("🏆 KLASEMEN GLOBAL (TOTAL HASIL 6 MATCH)")
 
 global_records = {}
-kunci_nama_tim = {} 
+kunci_nama_tim = {} # Akan menyimpan format: {"EVOS": "EVOS Budi", "CITC": "citcuit ell"}
 
 for m_idx in range(1, 7):
     m_name = f"Match {m_idx}"
@@ -112,36 +123,47 @@ for m_idx in range(1, 7):
         place = row.get("place", "-")
         kill = row.get("kill", 0)
         
-        # Buat daftar pencarian dari nama utama DAN semua nick yang dipisah koma
+        # Gabungkan nama pemain atas dan anggota lainnya
         daftar_cek_nick = [nama_utama] + [n.strip() for n in semua_nick_str.split(",")]
-        
         id_ditemukan = None
         
-        # LOGIKA BARU: Cek satu per satu nick pemain, adakah yang cocok dengan tim Match 1?
         for nick in daftar_cek_nick:
             if not nick: 
                 continue
-            prefix = ambil_3_huruf_depan(nick)
-            if prefix and prefix in kunci_nama_tim:
-                id_ditemukan = prefix
-                break # Jika ketemu 1 saja, langsung berhenti mencari!
+            
+            prefix = ambil_prefix(nick) # Ambil 4 huruf bersih dari simbol
+            if not prefix:
+                continue
                 
-        # Jika berhasil menemukan ID yang cocok (Match 2, 3, dst)
+            # PENGECEKAN 1: Apakah 4 Hurufnya Sama Persis?
+            if prefix in kunci_nama_tim:
+                id_ditemukan = prefix
+                break 
+                
+            # PENGECEKAN 2: Toleransi Typo (Fuzzy Matching) jika sudah ada tim yg terdaftar
+            if kunci_nama_tim:
+                # Cek adakah prefix terdaftar yang kemiripannya >= 70% dengan prefix saat ini
+                mirip = difflib.get_close_matches(prefix, kunci_nama_tim.keys(), n=1, cutoff=0.7)
+                if mirip:
+                    id_ditemukan = mirip[0] # Ambil yang paling mirip
+                    break
+
+        # Tentukan Nama Resmi Tim
         if id_ditemukan:
             nama_resmi = kunci_nama_tim[id_ditemukan]
         else:
-            # Jika tidak ada yang cocok sama sekali, anggap tim baru (Khusus Match 1)
-            prefix_baru = ambil_3_huruf_depan(nama_utama)
+            # Jika lolos kedua pengecekan di atas, berarti ini benar-benar tim baru (saat Match 1)
+            prefix_baru = ambil_prefix(nama_utama)
             if prefix_baru not in kunci_nama_tim:
                 if len(kunci_nama_tim) < 12:
                     kunci_nama_tim[prefix_baru] = nama_utama
                     nama_resmi = nama_utama
                 else:
-                    continue # Abaikan jika sudah 12 tim
+                    continue # Abaikan tim siluman ke-13
             else:
                 nama_resmi = kunci_nama_tim[prefix_baru]
         
-        # Hitung poin match ini
+        # Hitung Poin
         try:
             p_p = PLACEMENT_POINTS.get(int(place), 0)
         except:
