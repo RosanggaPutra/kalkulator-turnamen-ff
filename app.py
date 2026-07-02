@@ -16,24 +16,26 @@ PLACEMENT_POINTS = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1
 KILL_POINT = 1
 
 # ==========================================
-# FUNGSI PEMBANTU
+# FUNGSI PEMBERSIH & FORMAT DATA (PRO)
 # ==========================================
-def ambil_prefix(nama):
-    # Bersihkan simbol/spasi, ambil maksimal 4 huruf pertama
-    nama_bersih = re.sub(r'[^A-Za-z0-9]', '', str(nama)).upper()
-    return nama_bersih[:4] if len(nama_bersih) >= 4 else nama_bersih
+def bersihkan_nama(nama):
+    # Membuang semua simbol aneh, spasi, dan tanda baca. Hanya menyisakan Huruf & Angka (Kapital)
+    return re.sub(r'[^A-Za-z0-9]', '', str(nama)).upper()
 
 def bersihkan_angka(teks):
-    # Memaksa teks menjadi angka (contoh: "15 kills" -> 15)
+    # Memastikan data poin/kill murni angka (mencegah error jika AI mengetik "12 kills")
     angka = re.sub(r'[^0-9]', '', str(teks))
     return int(angka) if angka else 0
 
-# Inisialisasi Penyimpanan Memori
+# Inisialisasi Penyimpanan Memori di Session State
 if "database_match" not in st.session_state:
     st.session_state["database_match"] = {f"Match {i}": [] for i in range(1, 7)}
 
+# Kunci API di Sidebar
 st.sidebar.header("⚙️ Pengaturan API")
 api_key = st.sidebar.text_input("Masukkan Gemini API Key Anda:", type="password")
+
+# Navigasi Match
 st.sidebar.header("🎮 Navigasi Match")
 selected_match = st.sidebar.selectbox("Pilih Match yang Ingin Diproses:", [f"Match {i}" for i in range(1, 7)])
 
@@ -51,7 +53,7 @@ else:
         
     if foto_1 or foto_2:
         if st.button(f"🚀 Proses & Hitung {selected_match} via AI"):
-            with st.spinner("AI sedang membaca foto dan menganalisis seluruh pemain..."):
+            with st.spinner("AI sedang menganalisis seluruh data pemain pada gambar..."):
                 try:
                     images_to_process = []
                     if foto_1: images_to_process.append(Image.open(foto_1))
@@ -63,16 +65,16 @@ else:
                     Tugasmu menganalisis gambar hasil akhir pertandingan.
                     
                     Aturan SANGAT KETAT (ANTI-AUTOCORRECT):
-                    1. DILARANG KERAS memperbaiki ejaan menjadi kata bahasa Inggris. Tuliskan persis huruf demi huruf apa adanya sesuai gambar.
-                    2. team: Ambil nickname pemain PERTAMA (paling atas).
-                    3. semua_nick: Ekstrak SEMUA nickname pemain di kotak tersebut. Pisahkan dengan koma.
-                    4. place: Angka peringkat. HANYA TULIS ANGKA (contoh: 1).
-                    5. kill: Total kill dari seluruh pemain. HANYA TULIS ANGKA (contoh: 15).
-                    6. HANYA ekstrak tim yang benar-benar TERLIHAT di gambar.
+                    1. DILARANG KERAS memperbaiki ejaan menjadi kata bahasa Inggris (Contoh: JANGAN ubah 'citcuit' menjadi 'circuit'). Tuliskan huruf demi huruf apa adanya sesuai gambar.
+                    2. team: Ambil nickname pemain PERTAMA (paling atas) di kotak tim tersebut.
+                    3. semua_nick: Ekstrak SEMUA nickname pemain yang ada di dalam kotak tersebut (Pemain 1, 2, 3, dan 4 jika ada). Pisahkan dengan tanda koma.
+                    4. place: Angka peringkat tim. HANYA TULIS ANGKA (contoh: 1).
+                    5. kill: Total kill dari seluruh pemain di kotak tersebut. HANYA TULIS ANGKA (contoh: 12).
+                    6. HANYA ekstrak data tim yang benar-benar TERLIHAT di gambar. Jangan mengarang data.
                     
                     Keluarkan output JSON array mentah, contoh:
                     [
-                        {"team": "EVOS Budi", "semua_nick": "EVOS Budi, EVOS Agus, Joko12", "place": 1, "kill": 15}
+                        {"team": "citcuit ell", "semua_nick": "citcuit ell, falz, 120Hz", "place": 1, "kill": 12}
                     ]
                     """
                     
@@ -92,70 +94,91 @@ else:
         st.session_state["database_match"][selected_match] = edited_df.to_dict(orient="records")
 
 # ==========================================
-# PROSES AKUMULASI GLOBAL (MULTI-MEMORI PEMAIN)
+# PROSES AKUMULASI KLASEMEN GLOBAL (ANTI-BUG)
 # ==========================================
 st.markdown("---")
 st.header("🏆 KLASEMEN GLOBAL (TOTAL HASIL 6 MATCH)")
 
 global_records = {}
-kunci_nama_tim = {} # Format: {"PREF_P1": "Nama Tim", "PREF_P2": "Nama Tim"}
+player_to_team = {}  # Memori internal: memetakan nama_pemain_bersih -> Nama Tim Resmi
+official_teams = []  # Daftar nama tim resmi yang terdaftar dari Match 1
 
+# LANGKAH 1: Daftarkan semua Tim Resmi & Anggotanya murni dari Match 1 (Tanpa Tabrakan)
+match_1_list = st.session_state["database_match"].get("Match 1", [])
+for row in match_1_list:
+    nama_utama = str(row.get("team", "")).strip()
+    if not nama_utama:
+        continue
+    if nama_utama not in official_teams:
+        official_teams.append(nama_utama)
+    
+    # Ambil semua nickname di baris tersebut untuk didaftarkan ke database memori pemain
+    semua_nick_str = str(row.get("semua_nick", ""))
+    daftar_cek_nick = [nama_utama] + [n.strip() for n in semua_nick_str.split(",")]
+    for nick in daftar_cek_nick:
+        cleaned_n = bersihkan_nama(nick)
+        if cleaned_n:
+            player_to_team[cleaned_n] = nama_utama
+
+# LANGKAH 2: Hitung dan Akumulasikan Poin untuk Semua Match (1 hingga 6)
 for m_idx in range(1, 7):
     m_name = f"Match {m_idx}"
-    match_list = st.session_state["database_match"][m_name]
+    match_list = st.session_state["database_match"].get(m_name, [])
     
     for row in match_list:
         nama_utama = str(row.get("team", "")).strip()
-        semua_nick_str = str(row.get("semua_nick", ""))
-        
         if not nama_utama:
             continue
             
         place = bersihkan_angka(row.get("place", 0))
         kill = bersihkan_angka(row.get("kill", 0))
         
-        # Gabungkan semua pemain di kotak ini jadi detektif pencari
+        semua_nick_str = str(row.get("semua_nick", ""))
         daftar_cek_nick = [nama_utama] + [n.strip() for n in semua_nick_str.split(",")]
+        
         nama_resmi = None
         
-        # 1. Cek apakah ada 1 saja pemain di tim ini yang nyangkut di memori
-        for nick in daftar_cek_nick:
-            if not nick: continue
-            prefix = ambil_prefix(nick)
-            if not prefix: continue
-            
-            # Cek Persis
-            if prefix in kunci_nama_tim:
-                nama_resmi = kunci_nama_tim[prefix]
-                break
-            
-            # Cek Typo AI (Toleransi 75% mirip)
-            if kunci_nama_tim:
-                mirip = difflib.get_close_matches(prefix, kunci_nama_tim.keys(), n=1, cutoff=0.75)
-                if mirip:
-                    nama_resmi = kunci_nama_tim[mirip[0]]
-                    break
-
-        # 2. Registrasi / Penetapan Nama
-        if nama_resmi:
-            # Jika tim ini sudah ada, TAMBAHKAN juga hafalan pemain barunya (cadangan) ke memori
-            for nick in daftar_cek_nick:
-                p = ambil_prefix(nick)
-                if p and p not in kunci_nama_tim:
-                    kunci_nama_tim[p] = nama_resmi
+        # Jika Match 1, nama resminya mutlak sesuai apa yang tertulis di tabel Match 1
+        if m_idx == 1:
+            nama_resmi = nama_utama
         else:
-            # Jika tim ini benar-benar baru (saat Match 1 / belum dikenal)
-            # Pastikan daftar tim resmi belum mencapai batas 12
-            if len(set(kunci_nama_tim.values())) < 12:
-                nama_resmi = nama_utama
+            # Untuk Match 2-6, jalankan sistem detektif multi-pemain (Mendukung Pemain Cadangan)
+            
+            # Cek Level 1: Apakah ada salah satu nick (utama/anggota) yang cocok persis dengan data Match 1?
+            for nick in daftar_cek_nick:
+                cleaned_n = bersihkan_nama(nick)
+                if cleaned_n in player_to_team:
+                    nama_resmi = player_to_team[cleaned_n]
+                    break
+            
+            # Cek Level 2: Jika tidak ada yang persis (AI Typo parah), gunakan Fuzzy Matching teks utuh nama pemain
+            if not nama_resmi:
                 for nick in daftar_cek_nick:
-                    p = ambil_prefix(nick)
-                    if p and p not in kunci_nama_tim:
-                        kunci_nama_tim[p] = nama_resmi
-            else:
-                continue # Tim ke-13 ditolak
+                    cleaned_n = bersihkan_nama(nick)
+                    if cleaned_n and player_to_team:
+                        mirip = difflib.get_close_matches(cleaned_n, player_to_team.keys(), n=1, cutoff=0.6)
+                        if mirip:
+                            nama_resmi = player_to_team[mirip[0]]
+                            break
+            
+            # Cek Level 3: Jika masih tidak ketemu, lakukan Fuzzy Matching pada Nama Tim Utama secara keseluruhan
+            if not nama_resmi:
+                cleaned_team = bersihkan_nama(nama_utama)
+                cleaned_official_teams = {bersihkan_nama(t): t for t in official_teams}
+                mirip_team = difflib.get_close_matches(cleaned_team, cleaned_official_teams.keys(), n=1, cutoff=0.6)
+                if mirip_team:
+                    nama_resmi = cleaned_official_teams[mirip_team[0]]
         
-        # 3. Hitung Poin Pasti (Aman dari huruf/error)
+        # JALUR PENYELAMAT: Jika benar-benar tim baru atau tidak terdeteksi, biarkan membuat baris baru agar user bisa melihat
+        if not nama_resmi:
+            nama_resmi = nama_utama
+            # Daftarkan pemain barunya ke memori agar dikenali di match berikutnya
+            for nick in daftar_cek_nick:
+                cleaned_n = bersihkan_nama(nick)
+                if cleaned_n:
+                    player_to_team[cleaned_n] = nama_resmi
+        
+        # Kalkulasi Poin Pasti (Aman dari gangguan teks)
         p_p = PLACEMENT_POINTS.get(place, 0)
         total_p_match = p_p + (kill * KILL_POINT)
         
@@ -166,6 +189,7 @@ for m_idx in range(1, 7):
         global_records[nama_resmi][f"{m_name} KILL"] = kill
         global_records[nama_resmi][f"{m_name} POINT"] = total_p_match
 
+# Tampilkan Hasil Akhir ke Tabel Klasemen Global jika ada data
 if global_records:
     table_rows = []
     for t_name, m_data in global_records.items():
