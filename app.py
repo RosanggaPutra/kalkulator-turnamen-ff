@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import pandas as pd
+import re
 from PIL import Image
 
 # Pengaturan Dasar Halaman Web
@@ -9,9 +10,15 @@ st.set_page_config(page_title="Kalkulator Turnamen FF AI", layout="wide")
 st.title("🏆 Kalkulator Poin Otomatis Turnamen Free Fire")
 st.write("Unggah screenshot hasil match, biar AI yang menghitung klasemen secara otomatis!")
 
-# Regulasi Poin Resmi Free Fire (Dapat disesuaikan)
+# Regulasi Poin Resmi Free Fire
 PLACEMENT_POINTS = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1, 11: 0, 12: 0}
 KILL_POINT = 1
+
+# Fungsi Cerdas untuk Mengambil 3 Huruf Depan Nama Tim (Mengabaikan Simbol/Spasi)
+def ambil_3_huruf_depan(nama):
+    # Hanya menyisakan huruf dan angka, lalu jadikan huruf besar semua
+    nama_bersih = re.sub(r'[^A-Za-z0-9]', '', str(nama)).upper()
+    return nama_bersih[:3] # Mengambil 3 karakter pertama saja
 
 # 1. Inisialisasi Penyimpanan Memori (Session State) untuk 6 Match
 if "database_match" not in st.session_state:
@@ -32,7 +39,7 @@ else:
     
     st.header(f"📊 Pemrosesan Data - {selected_match}")
     
-    # Input Upload Foto (2 Gambar per Match)
+    # Input Upload Foto
     col1, col2 = st.columns(2)
     with col1:
         foto_1 = st.file_uploader(f"Upload Gambar 1 (Rank Atas) - {selected_match}", type=["jpg", "jpeg", "png"])
@@ -41,14 +48,30 @@ else:
         
     if foto_1 and foto_2:
         if st.button(f"🚀 Proses & Hitung {selected_match} via AI"):
-            with st.spinner("AI sedang membaca foto dan menghitung poin..."):
+            with st.spinner("AI sedang membaca foto dan menganalisis pemain..."):
                 try:
                     img1 = Image.open(foto_1)
                     img2 = Image.open(foto_2)
                     
                     model = genai.GenerativeModel('gemini-2.5-flash')
                     
-                    prompt = "Kamu adalah AI penilai turnamen Free Fire. Ekstrak data seluruh blok tim dari peringkat 1 hingga 12 dari kedua gambar ini. Aturan: 1. Nama Tim: Ambil dari kesamaan Tag Clan, atau nickname urutan teratas di kotak tersebut. 2. Rank/Place: Angka peringkat kotak (1-12). 3. Total Kill: Jumlahkan kill 4 pemain di kotak peringkat tersebut. Keluarkan output HANYA dalam bentuk JSON array objek mentah tanpa markdown, contoh: [{'team': 'NamaTim', 'place': 1, 'kill': 29}]"
+                    # PROMPT BARU: Memaksa AI mengambil nama dari pemain 1-4 dan membatasi TEPAT 12 baris
+                    prompt = """
+                    Kamu adalah sistem AI penilai turnamen esports Free Fire.
+                    Tugasmu menganalisis 2 gambar hasil akhir pertandingan yang secara total berisi Rank 1 sampai 12.
+                    
+                    Aturan SANGAT KETAT:
+                    1. NAMA TIM: Ambil nickname pemain urutan PERTAMA (paling atas) di dalam setiap kotak peringkat. Jika pemain pertama kabur atau kosong, ambil dari pemain urutan KEDUA, KETIGA, atau KEEMPAT. Tuliskan nickname utuhnya.
+                    2. RANK/PLACE: Angka peringkat dari kotak tersebut (1-12).
+                    3. TOTAL KILL: Hitung jumlah kill seluruh pemain di kotak tersebut.
+                    4. OUTPUT WAJIB TEPAT 12 TIM (Rank 1 sampai 12). Tidak boleh lebih dari 12, dan tidak boleh kurang! Periksa kembali agar tidak ada Rank yang terlewat.
+                    
+                    Keluarkan output HANYA dalam bentuk JSON array mentah, contoh:
+                    [
+                        {"team": "EVOS Budi", "place": 1, "kill": 15},
+                        {"team": "SAD BoyZzz", "place": 2, "kill": 10}
+                    ]
+                    """
                     
                     response = model.generate_content([prompt, img1, img2])
                     clean_json = response.text.strip().replace("```json", "").replace("```", "")
@@ -59,45 +82,59 @@ else:
                 except Exception as e:
                     st.error(f"Gagal memproses gambar. Error: {str(e)}")
 
-    # Menampilkan data match aktif yang bisa diedit langsung oleh user
+    # Menampilkan data match aktif (Data Editor)
     if st.session_state["database_match"][selected_match]:
         st.subheader(f"📝 Koreksi Hasil Sementara ({selected_match})")
         
         df_current = pd.DataFrame(st.session_state["database_match"][selected_match])
         edited_df = st.data_editor(df_current, num_rows="dynamic", key=f"editor_{selected_match}")
-        
         st.session_state["database_match"][selected_match] = edited_df.to_dict(orient="records")
 
-# 2. PROSES AKUMULASI GLOBAL
+# 2. PROSES AKUMULASI GLOBAL (DETEKSI 3 HURUF DEPAN)
 st.markdown("---")
 st.header("🏆 KLASEMEN GLOBAL (TOTAL HASIL 6 MATCH)")
 
 global_records = {}
+kunci_nama_tim = {} # Menyimpan nama resmi tim berdasarkan 3 huruf depannya
 
 for m_idx in range(1, 7):
     m_name = f"Match {m_idx}"
     match_list = st.session_state["database_match"][m_name]
     
     for row in match_list:
-        nama_tim = str(row.get("team", "")).strip()
-        if not nama_tim:
+        nama_mentah = str(row.get("team", "")).strip()
+        if not nama_mentah:
             continue
             
         place = row.get("place", "-")
         kill = row.get("kill", 0)
         
+        # Ambil 3 huruf depan sebagai ID Unik penggabung
+        id_3_huruf = ambil_3_huruf_depan(nama_mentah)
+        
+        # Jika nama depan ini belum pernah ada, jadikan nama_mentah sebagai Nama Resmi
+        if id_3_huruf not in kunci_nama_tim:
+            # Batasi maksimal agar klasemen global hanya 12 tim
+            if len(kunci_nama_tim) < 12:
+                kunci_nama_tim[id_3_huruf] = nama_mentah
+            else:
+                continue # Abaikan tim siluman yang ke-13 agar tabel tidak rusak
+                
+        nama_resmi = kunci_nama_tim[id_3_huruf]
+        
+        # Hitung poin match ini
         try:
             p_p = PLACEMENT_POINTS.get(int(place), 0)
         except:
             p_p = 0
         total_p_match = p_p + (int(kill) * KILL_POINT)
         
-        if nama_tim not in global_records:
-            global_records[nama_tim] = {}
+        if nama_resmi not in global_records:
+            global_records[nama_resmi] = {}
             
-        global_records[nama_tim][f"{m_name} PLACE"] = place
-        global_records[nama_tim][f"{m_name} KILL"] = kill
-        global_records[nama_tim][f"{m_name} POINT"] = total_p_match
+        global_records[nama_resmi][f"{m_name} PLACE"] = place
+        global_records[nama_resmi][f"{m_name} KILL"] = kill
+        global_records[nama_resmi][f"{m_name} POINT"] = total_p_match
 
 if global_records:
     table_rows = []
@@ -120,3 +157,9 @@ if global_records:
     df_global.insert(0, "RANK", df_global.index + 1)
     
     st.dataframe(df_global, use_container_width=True, hide_index=True)
+    
+    if st.sidebar.button("🧹 Reset Semua Data Klasemen"):
+        st.session_state["database_match"] = {f"Match {i}": [] for i in range(1, 7)}
+        st.rerun()
+else:
+    st.info("Belum ada data match yang diproses. Klasemen global akan muncul otomatis di sini setelah Anda memproses minimal satu match.")
